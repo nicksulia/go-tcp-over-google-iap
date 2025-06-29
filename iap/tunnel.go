@@ -11,23 +11,24 @@ import (
 )
 
 type IAPTunnel struct {
-	ws           *websocket.Conn
-	host         IAPHost
-	tokenSource  oauth2.TokenSource
-	ack          uint64
-	sid          string
-	incoming     chan []byte
-	incomingSize uint64
-	msgBuffer    []byte
-	closed       chan struct{}
-	ready        chan struct{}
+	ws                      *websocket.Conn
+	host                    IAPHost
+	tokenSource             oauth2.TokenSource
+	totalBytesConfirmed     uint64
+	sid                     string
+	incoming                chan []byte
+	totalBytesReceived      uint64
+	totalBytesReceivedAcked uint64
+	msgBuffer               []byte
+	closed                  chan struct{}
+	ready                   chan struct{}
 }
 
 func NewIAPTunnel(host IAPHost, source oauth2.TokenSource) *IAPTunnel {
 	return &IAPTunnel{
 		host:        host,
 		tokenSource: source,
-		incoming:    make(chan []byte, 8096),
+		incoming:    make(chan []byte, 1024),
 		closed:      make(chan struct{}),
 		ready:       make(chan struct{}),
 	}
@@ -49,6 +50,10 @@ func (t *IAPTunnel) headers() (http.Header, error) {
 func (t *IAPTunnel) connectOrReconnect(ctx context.Context) (*websocket.Conn, *http.Response, error) {
 	var err error
 	var res *http.Response
+	// Reset state for a new connection
+	t.totalBytesReceived = 0
+	t.totalBytesReceivedAcked = 0
+	t.totalBytesConfirmed = 0
 	u := t.host.ConnectURI()
 	fmt.Println("Connecting to IAP Tunnel", "URI", u)
 
@@ -150,13 +155,13 @@ func (t *IAPTunnel) handleConnectSuccessSID(frame *IncomingFrame) {
 }
 
 func (t *IAPTunnel) handleReconnectSuccessACK(frame *IncomingFrame) {
-	t.ack = frame.ACK()
-	fmt.Println("Reconnect success", "ACK Bytes", t.ack)
+	t.totalBytesConfirmed = frame.ACK()
+	fmt.Println("Reconnect success", "ACK Bytes", t.totalBytesConfirmed)
 }
 
 func (t *IAPTunnel) handleACK(frame *IncomingFrame) {
-	// t.ack = frame.ACK()
-	// fmt.Println("ACK received", "ACK Bytes", t.ack)
+	t.totalBytesConfirmed = frame.ACK()
+	fmt.Println("ACK received", "ACK Bytes", t.totalBytesConfirmed)
 }
 
 func (t *IAPTunnel) handleData(frame *IncomingFrame) {
@@ -165,17 +170,22 @@ func (t *IAPTunnel) handleData(frame *IncomingFrame) {
 	fmt.Println("Data received", "Data Length", len(data), "binary_data[:20]", frame.data[:20])
 	if data != nil {
 		t.incoming <- data
-		t.incomingSize += uint64(len(data))
+		t.totalBytesReceived += uint64(len(data))
 		// gcloud iap-tunnel client sends ACKs for every MaxMessageSize * 2  bytes received
-		if t.incomingSize > MaxMessageSize*2 {
-			NewACKFrame(t.incomingSize).Send(t.ws)
-			t.incomingSize = 0
+		if t.totalBytesReceived-t.totalBytesReceivedAcked > MaxMessageSize*2 {
+			_, err := NewACKFrame(t.totalBytesReceived).Send(t.ws)
+			if err != nil {
+				fmt.Println("Failed to send ACK frame", "err", err)
+				return
+			}
+
+			t.totalBytesReceivedAcked = t.totalBytesReceived
 		}
 	}
 
 	// If there is additional data, handle it accordingly
 	if len(rest) > 0 {
-		fmt.Println("Additional data received after main payload", "Length", len(rest))
+		fmt.Println("Discard additional data received after main payload", "Length", len(rest))
 	}
 }
 
@@ -206,29 +216,15 @@ func (t *IAPTunnel) Read(p []byte) (n int, err error) {
 }
 
 func (t *IAPTunnel) Write(p []byte) (n int, err error) {
+	toSend := p
 	payloadLen := len(p)
-	totalSent := 0
 
-	for totalSent < len(p) {
-		chunkEnd := totalSent + MaxMessageSize
-		if chunkEnd > payloadLen {
-			chunkEnd = payloadLen
-		}
-
-		// Avoid slicing multiple times
-		chunk := p[totalSent:chunkEnd]
-		frame := NewDataFrame(chunk)
-
-		var sent int
-		var sendErr error
-		if sent, sendErr = frame.Send(t.ws); sendErr != nil {
-			return totalSent, sendErr
-		}
-
-		totalSent += sent
+	if payloadLen > MaxMessageSize {
+		toSend = p[:MaxMessageSize]
 	}
+	frame := NewDataFrame(toSend)
 
-	return totalSent, nil
+	return frame.Send(t.ws)
 }
 
 func (t *IAPTunnel) Close() error {

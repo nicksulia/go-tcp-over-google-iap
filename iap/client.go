@@ -8,11 +8,9 @@
 //   - IAPTunnelClient: Manages the lifecycle of the TCP-over-IAP tunnel client, including listener setup,
 //     connection handling, and tunnel management.
 //   - NewIAPTunnelClient: Constructs a new IAPTunnelClient with the specified host, credentials, and local port.
+//   - DryRun: Tests the connection to the IAP tunnel without establishing a full proxy.
 //   - Serve: Starts the listener and handles incoming connections, spawning a new IAP tunnel for each.
-//   - processConn: Handles a single TCP connection by establishing an IAP tunnel and synchronizing data.
-//   - syncConnections: Bi-directionally copies data between two connections using goroutines.
-//   - tcpListener: Internal listener wrapper with retry logic for accepting connections.
-//   - withKeepAlive: Enables TCP keep-alive on accepted connections.
+//   - Close: Closes the listener and cleans up resources.
 //
 // Usage:
 //  1. Create an IAPHost describing the target VM instance.
@@ -27,7 +25,10 @@
 //	creds, _ := credentials.DefaultCredentials(ctx)
 //	host := IAPHost{Project: "my-project", Zone: "us-central1-a", Instance: "my-vm"}
 //	client, _ := NewIAPTunnelClient(host, creds, "2201")
-//	client.Serve(ctx)
+//	err := client.DryRun(ctx) // Optional: Test the connection
+//	if err == nil {
+//		client.Serve(ctx)
+//	}
 package iap
 
 import (

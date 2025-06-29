@@ -87,9 +87,6 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func init() {
-}
-
 func main() {
 	rootCmd.Flags().StringVar(&projectID, "project", "", "GCP project ID")
 	rootCmd.Flags().StringVar(&zone, "zone", "", "GCP zone")
@@ -97,7 +94,7 @@ func main() {
 	rootCmd.Flags().StringVar(&iface, "interface", "nic0", "Network interface")
 	rootCmd.Flags().StringVar(&port, "port", "22", "Port to connect to")
 	rootCmd.Flags().StringVar(&localPort, "local-port", "2223", "Local port to bind for tunneling")
-	rootCmd.Flags().StringVar(&credentialsFile, "credentials-file", "", "Path to GCP service account credentials file (optional)")
+	rootCmd.Flags().StringVar(&credentialsFile, "credentials-file", "", "Absolute path to GCP service account credentials file (optional)")
 	rootCmd.MarkFlagRequired("project")
 	rootCmd.MarkFlagRequired("zone")
 	rootCmd.MarkFlagRequired("instance")

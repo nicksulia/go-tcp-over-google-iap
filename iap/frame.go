@@ -39,6 +39,10 @@ func (f *IncomingFrame) Data() ([]byte, []byte) {
 	return fullPayload[:msgLen], fullPayload[msgLen:]
 }
 
+type Frame interface {
+	Send(conn *websocket.Conn) (int, error)
+}
+
 type ACKFrame struct {
 	frame  []byte
 	ackVal uint64
