@@ -1,3 +1,33 @@
+// Package iap provides functionality for establishing TCP tunnels over Google Cloud IAP (Identity-Aware Proxy).
+//
+// This package includes an IAPTunnelClient that listens for local TCP connections and proxies them over
+// secure IAP tunnels to remote Google Cloud VM instances. It manages authentication using Google credentials,
+// handles connection retries, and synchronizes data between local and remote endpoints.
+//
+// Key types and functions:
+//   - IAPTunnelClient: Manages the lifecycle of the TCP-over-IAP tunnel client, including listener setup,
+//     connection handling, and tunnel management.
+//   - NewIAPTunnelClient: Constructs a new IAPTunnelClient with the specified host, credentials, and local port.
+//   - Serve: Starts the listener and handles incoming connections, spawning a new IAP tunnel for each.
+//   - processConn: Handles a single TCP connection by establishing an IAP tunnel and synchronizing data.
+//   - syncConnections: Bi-directionally copies data between two connections using goroutines.
+//   - tcpListener: Internal listener wrapper with retry logic for accepting connections.
+//   - withKeepAlive: Enables TCP keep-alive on accepted connections.
+//
+// Usage:
+//  1. Create an IAPHost describing the target VM instance.
+//  2. Obtain Google credentials (e.g., via ADC).
+//  3. Instantiate IAPTunnelClient using NewIAPTunnelClient.
+//  4. Call Serve to start accepting and proxying connections.
+//
+// Example:
+//
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//	creds, _ := credentials.DefaultCredentials(ctx)
+//	host := IAPHost{Project: "my-project", Zone: "us-central1-a", Instance: "my-vm"}
+//	client, _ := NewIAPTunnelClient(host, creds, "2201")
+//	client.Serve(ctx)
 package iap
 
 import (
@@ -34,13 +64,18 @@ func (l *tcpListener) Close() error {
 func (l *tcpListener) Accept() (net.Conn, error, bool) {
 	conn, err := l.lis.Accept()
 	if err != nil {
+		isClosed := isConnectionClosed(err)
+		if isClosed {
+			return nil, nil, isClosed
+		}
+
 		if l.counter < l.retryCount {
 			l.counter++
 			fmt.Println("Accept error:", err, "retrying: ", l.counter, "/", l.retryCount)
 			time.Sleep(time.Second * time.Duration(l.counter))
 			return l.Accept() // Retry accepting connection
 		}
-		return nil, fmt.Errorf("failed to accept connection after retries: %w", err), isConnectionClosed(err)
+		return nil, fmt.Errorf("failed to accept connection after retries: %w", err), false
 	}
 	withKeepAlive(conn)
 	l.counter = 0 // Reset counter on successful accept
@@ -94,6 +129,20 @@ func (c *IAPTunnelClient) isActive() bool {
 	return c.active
 }
 
+func (c *IAPTunnelClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lis != nil {
+		return c.lis.Close()
+	}
+	return nil
+}
+
+func (c *IAPTunnelClient) DryRun() error {
+	tunnel := NewIAPTunnel(c.host, c.tokenSource)
+	return tunnel.DryRun(context.Background())
+}
+
 func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 	var err error
 	if c.isActive() {
@@ -115,6 +164,7 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 		fmt.Println("TCP-over-IAP listener closed, shutting down")
 	}()
 
+	fmt.Println("TCP-over-IAP listener is ready", c.lis.lis.Addr().String())
 	for {
 		conn, err, connClosed := c.lis.Accept()
 		if connClosed {
@@ -131,7 +181,10 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 	}
 }
 
+// processConn handles a new connection by establishing an IAP tunnel and synchronizing data between the connection and the tunnel.
+// each TCP connection receives a new IAP tunnel instance.
 func (c *IAPTunnelClient) processConn(ctx context.Context, conn net.Conn) {
+	fmt.Println("New connection accepted", "remote_addr", conn.RemoteAddr().String())
 	tunnel := NewIAPTunnel(c.getHost(), c.getTokenSource())
 	tunnel.Start(ctx)
 	defer tunnel.Close()

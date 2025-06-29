@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/coder/websocket"
 	"golang.org/x/oauth2"
@@ -15,8 +14,8 @@ type IAPTunnel struct {
 	ws           *websocket.Conn
 	host         IAPHost
 	tokenSource  oauth2.TokenSource
-	ackBytes     uint64
-	sid          uint64
+	ack          uint64
+	sid          string
 	incoming     chan []byte
 	incomingSize uint64
 	msgBuffer    []byte
@@ -28,7 +27,7 @@ func NewIAPTunnel(host IAPHost, source oauth2.TokenSource) *IAPTunnel {
 	return &IAPTunnel{
 		host:        host,
 		tokenSource: source,
-		incoming:    make(chan []byte, 1024),
+		incoming:    make(chan []byte, 8096),
 		closed:      make(chan struct{}),
 		ready:       make(chan struct{}),
 	}
@@ -50,8 +49,6 @@ func (t *IAPTunnel) headers() (http.Header, error) {
 func (t *IAPTunnel) connectOrReconnect(ctx context.Context) (*websocket.Conn, *http.Response, error) {
 	var err error
 	var res *http.Response
-
-	// TODO: Add Reconnect support
 	u := t.host.ConnectURI()
 	fmt.Println("Connecting to IAP Tunnel", "URI", u)
 
@@ -67,6 +64,24 @@ func (t *IAPTunnel) connectOrReconnect(ctx context.Context) (*websocket.Conn, *h
 	t.ws, res, err = websocket.Dial(ctx, u, opts)
 
 	return t.ws, res, err
+}
+
+func (t *IAPTunnel) DryRun(ctx context.Context) error {
+	_, _, err := t.connectOrReconnect(ctx)
+	if err != nil {
+		fmt.Println("Dry run connect failed", "err", err)
+		return err
+	}
+
+	_, _, err = t.ws.Read(ctx) // Read to ensure connection is established
+	if err != nil {
+		fmt.Println("Dry run read failed", "err", err)
+		return err
+	}
+
+	fmt.Println("Dry run successful, connection established.")
+	t.Close()
+	return nil
 }
 
 func (t *IAPTunnel) Start(ctx context.Context) {
@@ -90,7 +105,7 @@ func (t *IAPTunnel) start(ctx context.Context) {
 
 			fmt.Println("Websocket read error", "err", err)
 			// Attempt reconnect if not context cancellation
-			if ctx.Err() == nil && t.sid != 0 {
+			if ctx.Err() == nil && t.sid != "" {
 				_, _, err = t.connectOrReconnect(ctx)
 				if err != nil {
 					fmt.Println("Reconnect failed", "err", err)
@@ -111,7 +126,7 @@ func (t *IAPTunnel) start(ctx context.Context) {
 func (t *IAPTunnel) handleFrame(frame *IncomingFrame) {
 	switch frame.Type() {
 	case RelayConnectSuccessSID:
-		t.handleReconnectSuccessSID(frame)
+		t.handleConnectSuccessSID(frame)
 	case RelayReconnectSuccessACK:
 		t.handleReconnectSuccessACK(frame)
 	case RelayACK:
@@ -123,7 +138,7 @@ func (t *IAPTunnel) handleFrame(frame *IncomingFrame) {
 	}
 }
 
-func (t *IAPTunnel) handleReconnectSuccessSID(frame *IncomingFrame) {
+func (t *IAPTunnel) handleConnectSuccessSID(frame *IncomingFrame) {
 	t.sid = frame.SID()
 	fmt.Println("Connect success", "sid", t.sid)
 	select {
@@ -135,27 +150,26 @@ func (t *IAPTunnel) handleReconnectSuccessSID(frame *IncomingFrame) {
 }
 
 func (t *IAPTunnel) handleReconnectSuccessACK(frame *IncomingFrame) {
-	t.ackBytes = frame.ACK()
-	time.Sleep(time.Second) // Wait for the connection to stabilize
-	fmt.Println("Reconnect success", "ACK Bytes", t.ackBytes)
+	t.ack = frame.ACK()
+	fmt.Println("Reconnect success", "ACK Bytes", t.ack)
 }
 
 func (t *IAPTunnel) handleACK(frame *IncomingFrame) {
-	t.ackBytes = frame.ACK()
-	fmt.Println("ACK received", "ACK Bytes", t.ackBytes)
+	// t.ack = frame.ACK()
+	// fmt.Println("ACK received", "ACK Bytes", t.ack)
 }
 
 func (t *IAPTunnel) handleData(frame *IncomingFrame) {
 	data, rest := frame.Data()
 	// Process the data as needed
-	fmt.Println("Data received", "SID", frame.SID(), "Data Length", len(data))
+	fmt.Println("Data received", "Data Length", len(data), "binary_data[:20]", frame.data[:20])
 	if data != nil {
 		t.incoming <- data
 		t.incomingSize += uint64(len(data))
-		if t.incomingSize > MaxMessageSize {
-			fmt.Println("Warning: Incoming data size exceeded maximum limit", "Size", t.incomingSize)
+		// gcloud iap-tunnel client sends ACKs for every MaxMessageSize * 2  bytes received
+		if t.incomingSize > MaxMessageSize*2 {
 			NewACKFrame(t.incomingSize).Send(t.ws)
-			t.incomingSize = 0 // Reset size to prevent overflow
+			t.incomingSize = 0
 		}
 	}
 
@@ -192,13 +206,34 @@ func (t *IAPTunnel) Read(p []byte) (n int, err error) {
 }
 
 func (t *IAPTunnel) Write(p []byte) (n int, err error) {
-	frame := NewDataFrame(p)
-	fmt.Println("Sending data", "SID", t.sid, "Data Length", len(p))
-	return frame.Send(t.ws)
+	payloadLen := len(p)
+	totalSent := 0
+
+	for totalSent < len(p) {
+		chunkEnd := totalSent + MaxMessageSize
+		if chunkEnd > payloadLen {
+			chunkEnd = payloadLen
+		}
+
+		// Avoid slicing multiple times
+		chunk := p[totalSent:chunkEnd]
+		frame := NewDataFrame(chunk)
+
+		var sent int
+		var sendErr error
+		if sent, sendErr = frame.Send(t.ws); sendErr != nil {
+			return totalSent, sendErr
+		}
+
+		totalSent += sent
+	}
+
+	return totalSent, nil
 }
 
 func (t *IAPTunnel) Close() error {
 	close(t.closed)
+	close(t.incoming)
 	if t.ws != nil {
 		return t.ws.Close(websocket.StatusNormalClosure, "closing IAP tunnel")
 	}

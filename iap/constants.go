@@ -23,10 +23,10 @@ const (
 	MessageLen           = 4                          // Length of the message length field in bytes (big-endian encoding, 4 bytes for uint32
 	DataMessageHeaderLen = MessageTagLen + MessageLen // Length of the data message header in bytes (2 bytes for tag + 4 bytes for length)
 	ACKLen               = 8                          // Length of the ACK message in bytes 64-bit unsigned integer (8 bytes for uint64)
-	SIDLen               = 8                          // Length of the SID in bytes (64-bit unsigned integer, 8 bytes for uint64)
-	SIDHeaderLen         = MessageTagLen + SIDLen     // Length of the SID message header in bytes (2 bytes for tag + 8 bytes for length)
+	SIDLen               = 4                          // Length of the SID in bytes (32-bit unsigned integer, 4 bytes for uint32)
+	SIDHeaderLen         = MessageTagLen + SIDLen     // Length of the SID message header in bytes (2 bytes for tag + 4 bytes for length)
 	ACKHeaderLen         = MessageTagLen + ACKLen     // Length of the ACK message header in bytes (2 bytes for tag + 8 bytes for length)
-	MaxMessageSize       = 1024 * 16                  // Maximum default message size in bytes (16 KB)
+	MaxMessageSize       = 1024 * 16                  // Maximum default message size in bytes (16 KB). Defined by the protocol specification.
 
 	CloseStatusNormal          = 1000
 	CloseStatusAbnormalClosure = 1006

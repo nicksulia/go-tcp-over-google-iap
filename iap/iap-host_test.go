@@ -25,7 +25,7 @@ func TestCreateReconnectURI(t *testing.T) {
 		Zone: "us-central1-a",
 	}
 
-	sid := uint64(12345)
+	sid := "12345"
 	ack := uint64(67890)
 
 	expectedURI := "wss://tunnel.cloudproxy.app/v4/reconnect?ack=67890&sid=12345&zone=us-central1-a"

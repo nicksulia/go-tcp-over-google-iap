@@ -8,18 +8,9 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/nicksulia/go-tcp-over-google-iap/credentials"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/oauth2/google"
 )
-
-func credentials() (*google.Credentials, error) {
-	// by default provide sa key as path
-	return google.FindDefaultCredentials(
-		context.Background(),
-		"https://www.googleapis.com/auth/compute",
-		"https://www.googleapis.com/auth/cloud-platform",
-	)
-}
 
 // TestIAPClientE2E serves as a simple solution to debug and troubleshoot
 func TestIAPClientE2E(t *testing.T) {
@@ -28,7 +19,9 @@ func TestIAPClientE2E(t *testing.T) {
 	}
 
 	// GOOGLE_APPLICATION_CREDENTIALS will work with
-	creds, _ := credentials()
+	pathToCreds := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	creds, err := credentials.ReadCredentialsFile(context.Background(), pathToCreds)
+	assert.NoError(t, err, "ReadCredentialsFile should not respond with error")
 	host := IAPHost{
 		ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT_ID"),
 		Zone:      os.Getenv("GOOGLE_CLOUD_INSTANCE_ZONE"),
@@ -37,7 +30,7 @@ func TestIAPClientE2E(t *testing.T) {
 		Interface: "nic0",
 	}
 
-	client, err := NewIAPTunnelClient(host, creds, "2223")
+	client, err := NewIAPTunnelClient(host, creds, "3089")
 	assert.Nil(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

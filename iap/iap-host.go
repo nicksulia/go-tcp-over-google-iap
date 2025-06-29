@@ -1,35 +1,40 @@
 package iap
 
 import (
+	"fmt"
 	"net/url"
-	"strconv"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
 )
 
 type IAPHost struct {
-	ProjectID string `mapstructure:"project"`
-	Zone      string `mapstructure:"zone"`
-	Instance  string `mapstructure:"instance"`
-	Interface string `mapstructure:"interface"`
-	Port      string `mapstructure:"port"`
+	ProjectID    string `mapstructure:"project"`
+	Zone         string `mapstructure:"zone"`
+	Instance     string `mapstructure:"instance"`
+	Interface    string `mapstructure:"interface"`
+	Port         string `mapstructure:"port"`
+	NewWebsocket string `mapstructure:"newWebsocket,omitempty"`
 }
 
 type reconnectParams struct {
-	Ack  string `mapstructure:"ack"`
-	Sid  string `mapstructure:"sid"`
-	Zone string `mapstructure:"zone"`
+	Ack          string `mapstructure:"ack"`
+	Sid          string `mapstructure:"sid"`
+	Zone         string `mapstructure:"zone"`
+	NewWebsocket string `mapstructure:"newWebsocket"`
 }
 
 func (h *IAPHost) ConnectURI() string {
-	return tunnelURI(ConnectPath, h)
+	h.NewWebsocket = "True"
+	return tunnelURI(ConnectPath, &h)
 }
 
-func (h *IAPHost) ReconnectURI(sid, ack uint64) string {
+// ReconnectURI is intended to restore existing session
+func (h *IAPHost) ReconnectURI(sid string, ack uint64) string {
 	return tunnelURI(ReconnectPath, &reconnectParams{
-		Ack:  strconv.FormatUint(ack, 10),
-		Sid:  strconv.FormatUint(sid, 10),
-		Zone: h.Zone,
+		Ack:          fmt.Sprintf("%d", ack),
+		Sid:          sid,
+		Zone:         h.Zone,
+		NewWebsocket: "True",
 	})
 }
 

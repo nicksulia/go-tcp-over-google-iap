@@ -23,8 +23,9 @@ func (f *IncomingFrame) Type() uint16 {
 	return tag
 }
 
-func (f *IncomingFrame) SID() uint64 {
-	return binary.BigEndian.Uint64(f.data[MessageTagLen:SIDHeaderLen])
+func (f *IncomingFrame) SID() string {
+	sidLen := binary.BigEndian.Uint32(f.data[MessageTagLen:SIDHeaderLen])
+	return string(f.data[SIDHeaderLen : SIDHeaderLen+sidLen])
 }
 
 func (f *IncomingFrame) ACK() uint64 {
@@ -39,7 +40,8 @@ func (f *IncomingFrame) Data() ([]byte, []byte) {
 }
 
 type ACKFrame struct {
-	frame []byte
+	frame  []byte
+	ackVal uint64
 }
 
 func (f *ACKFrame) Send(conn *websocket.Conn) (int, error) {
@@ -51,13 +53,15 @@ func (f *ACKFrame) Send(conn *websocket.Conn) (int, error) {
 	defer writer.Close()
 	written, err := writer.Write(f.frame)
 	dataWritten := written - ACKHeaderLen
-	fmt.Println("Sent ACK frame", "bytes", dataWritten, "payload_len", len(f.frame))
+	fmt.Println("Send ACK frame", "frame size", len(f.frame), "binary_data", f.frame)
 
 	return dataWritten, err
 }
 
 func NewACKFrame(inboundDataLen uint64) *ACKFrame {
-	ackFrame := &ACKFrame{}
+	ackFrame := &ACKFrame{
+		ackVal: inboundDataLen,
+	}
 	ackFrame.frame = make([]byte, ACKHeaderLen)
 	binary.BigEndian.PutUint16(ackFrame.frame[0:], RelayACK)
 	binary.BigEndian.PutUint64(ackFrame.frame[MessageTagLen:], inboundDataLen)
@@ -75,7 +79,7 @@ func (f *DataFrame) Send(conn *websocket.Conn) (int, error) {
 	}
 	defer writer.Close()
 	written, err := writer.Write(f.frame)
-
+	fmt.Println("Send Data frame", "frame size", len(f.frame), "bytes_to_send[:20]", f.frame[:20])
 	dataWritten := written - DataMessageHeaderLen
 	return dataWritten, err
 }
