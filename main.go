@@ -9,6 +9,7 @@ import (
 
 	"github.com/nicksulia/go-tcp-over-google-iap/credentials"
 	"github.com/nicksulia/go-tcp-over-google-iap/iap"
+	"github.com/nicksulia/go-tcp-over-google-iap/logger"
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2/google"
 )
@@ -29,6 +30,7 @@ var (
 	port            string
 	localPort       string
 	credentialsFile string
+	loglevel        string
 )
 
 var rootCmd = &cobra.Command{
@@ -38,8 +40,12 @@ var rootCmd = &cobra.Command{
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		logger, err := logger.NewZapLogger(loglevel)
+		if err != nil {
+			logger.Fatal("Error creating logger:", err)
+		}
+
 		var creds *google.Credentials
-		var err error
 
 		if credentialsFile != "" {
 			creds, err = credentials.ReadCredentialsFile(ctx, credentialsFile)
@@ -47,7 +53,7 @@ var rootCmd = &cobra.Command{
 			creds, err = credentials.DefaultCredentials(ctx)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading credentials file: %v\n", err)
+			logger.Fatal("Error reading credentials file:", err)
 		}
 
 		host := iap.IAPHost{
@@ -58,21 +64,19 @@ var rootCmd = &cobra.Command{
 			Port:      port,
 		}
 
-		client, err := iap.NewIAPTunnelClient(host, creds, localPort)
+		client, err := iap.NewIAPTunnelClient(host, creds, localPort, logger)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating IAP client: %v\n", err)
-			os.Exit(1)
+			logger.Fatal("Error creating IAP client", "err", err)
 		}
 
 		err = client.DryRun()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error during dry run: %v\n", err)
-			os.Exit(1)
+			logger.Fatal("Error during dry run", "err", err)
 		}
 
 		err = client.Serve(ctx)
 		if err != nil {
-			os.Exit(1)
+			logger.Fatal("Error serving IAP tunnel", "err", err)
 		}
 
 		// Handle SIGINT/SIGTERM for graceful shutdown
@@ -80,7 +84,7 @@ var rootCmd = &cobra.Command{
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 		go func() {
 			<-sigCh
-			fmt.Println("Shutting down...")
+			logger.Info("Shutting down...")
 			cancel()
 			client.Close()
 		}()
@@ -95,13 +99,14 @@ func main() {
 	rootCmd.Flags().StringVar(&port, "port", "22", "Port to connect to")
 	rootCmd.Flags().StringVar(&localPort, "local-port", "2223", "Local port to bind for tunneling")
 	rootCmd.Flags().StringVar(&credentialsFile, "credentials-file", "", "Absolute path to GCP service account credentials file (optional)")
+	rootCmd.Flags().StringVar(&loglevel, "loglevel", "info", "Logging level (debug, info, warn, error)")
 	rootCmd.MarkFlagRequired("project")
 	rootCmd.MarkFlagRequired("zone")
 	rootCmd.MarkFlagRequired("instance")
 
 	err := rootCmd.Execute()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error executing command:", err)
 		os.Exit(1)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	mapstructure "github.com/go-viper/mapstructure/v2"
 )
 
+// IAPHost represents the configuration for connecting to a Google Cloud IAP tunnel.
 type IAPHost struct {
 	ProjectID    string `mapstructure:"project"`
 	Zone         string `mapstructure:"zone"`
@@ -23,6 +24,7 @@ type reconnectParams struct {
 	NewWebsocket string `mapstructure:"newWebsocket"`
 }
 
+// ConnectURI generates the URI for establishing a new connection to the IAP tunnel.
 func (h *IAPHost) ConnectURI() string {
 	h.NewWebsocket = "True"
 	return tunnelURI(ConnectPath, &h)

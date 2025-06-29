@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nicksulia/go-tcp-over-google-iap/logger"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/sync/errgroup"
@@ -52,16 +53,23 @@ func withKeepAlive(conn net.Conn) {
 	}
 }
 
+// tcpListener is a wrapper around net.Listener that adds retry logic for accepting connections.
 type tcpListener struct {
 	lis        net.Listener
 	retryCount int
 	counter    int
 }
 
+// Close closes the TCP listener and releases resources.
 func (l *tcpListener) Close() error {
 	return l.lis.Close()
 }
 
+func (l *tcpListener) Addr() net.Addr {
+	return l.lis.Addr()
+}
+
+// Accept waits for and returns the next incoming connection to the listener.
 func (l *tcpListener) Accept() (net.Conn, error, bool) {
 	conn, err := l.lis.Accept()
 	if err != nil {
@@ -72,7 +80,6 @@ func (l *tcpListener) Accept() (net.Conn, error, bool) {
 
 		if l.counter < l.retryCount {
 			l.counter++
-			fmt.Println("Accept error:", err, "retrying: ", l.counter, "/", l.retryCount)
 			time.Sleep(time.Second * time.Duration(l.counter))
 			return l.Accept() // Retry accepting connection
 		}
@@ -83,6 +90,7 @@ func (l *tcpListener) Accept() (net.Conn, error, bool) {
 	return conn, nil, false
 }
 
+// newListener creates a new TCP listener wrapper on the specified port with retry logic.
 func newListener(ctx context.Context, port string) (*tcpListener, error) {
 	addr := fmt.Sprintf(":%s", port)
 	var lc net.ListenConfig
@@ -97,7 +105,9 @@ func newListener(ctx context.Context, port string) (*tcpListener, error) {
 	}, nil
 }
 
+// IAPTunnelClient manages a TCP-over-IAP tunnel client that listens for local connections
 type IAPTunnelClient struct {
+	logger      logger.Logger
 	mu          sync.Mutex
 	active      bool
 	tokenSource oauth2.TokenSource
@@ -106,30 +116,41 @@ type IAPTunnelClient struct {
 	lis         *tcpListener
 }
 
+// getHost is thread-safe method to retrieve the IAP host configuration.
 func (c *IAPTunnelClient) getHost() IAPHost {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.host
 }
 
+// getTokenSource is a thread-safe method to retrieve the token source for authentication.
 func (c *IAPTunnelClient) getTokenSource() oauth2.TokenSource {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.tokenSource
 }
 
+func (c *IAPTunnelClient) getLogger() logger.Logger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.logger
+}
+
+// setActive is a thread-safe method to set the active state of the IAPTunnelClient.
 func (c *IAPTunnelClient) setActive(active bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.active = active
 }
 
+// isActive is a thread-safe method which checks if the IAPTunnelClient is currently active.
 func (c *IAPTunnelClient) isActive() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.active
 }
 
+// Close is a thread-safe method to close the TCP listener and clean up resources.
 func (c *IAPTunnelClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -139,11 +160,14 @@ func (c *IAPTunnelClient) Close() error {
 	return nil
 }
 
+// DryRun tests the connection to the IAP tunnel without establishing a full proxy.
+// It attempts to connect to the IAP tunnel and returns any errors encountered.
 func (c *IAPTunnelClient) DryRun() error {
-	tunnel := NewIAPTunnel(c.host, c.tokenSource)
+	tunnel := NewIAPTunnel(c.getHost(), c.getTokenSource(), c.getLogger())
 	return tunnel.DryRun(context.Background())
 }
 
+// Serve starts the TCP-over-IAP listener and handles incoming connections.
 func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 	var err error
 	if c.isActive() {
@@ -162,10 +186,10 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 	defer c.lis.Close()
 
 	defer func() {
-		fmt.Println("TCP-over-IAP listener closed, shutting down")
+		c.logger.Info("TCP-over-IAP listener closed, shutting down")
 	}()
 
-	fmt.Println("TCP-over-IAP listener is ready", c.lis.lis.Addr().String())
+	c.logger.Info("TCP-over-IAP listener is ready", "addr", c.lis.Addr().String())
 	for {
 		conn, err, connClosed := c.lis.Accept()
 		if connClosed {
@@ -173,8 +197,7 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 		}
 
 		if err != nil {
-
-			fmt.Println("Accept error", "err", err)
+			c.logger.Error("Accept error", "err", err)
 			return err
 		}
 
@@ -185,8 +208,8 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 // processConn handles a new connection by establishing an IAP tunnel and synchronizing data between the connection and the tunnel.
 // each TCP connection receives a new IAP tunnel instance.
 func (c *IAPTunnelClient) processConn(ctx context.Context, conn net.Conn) {
-	fmt.Println("New connection accepted", "remote_addr", conn.RemoteAddr().String())
-	tunnel := NewIAPTunnel(c.getHost(), c.getTokenSource())
+	c.logger.Info("New connection accepted", "remote_addr", conn.RemoteAddr().String())
+	tunnel := NewIAPTunnel(c.getHost(), c.getTokenSource(), c.getLogger())
 	tunnel.Start(ctx)
 	defer tunnel.Close()
 	defer conn.Close()
@@ -199,18 +222,19 @@ func (c *IAPTunnelClient) processConn(ctx context.Context, conn net.Conn) {
 	}
 
 	err := syncConnections(ctx, conn, tunnel)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
-		fmt.Println("Proxy error", "err", err)
+	if err != nil && !isConnectionClosed(err) {
+		c.logger.Error("Proxy error", "err", err)
 	}
 }
 
+// isConnectionClosed checks if the error indicates that the listener's connection has been closed.
 func isConnectionClosed(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed)
+	return errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF)
 }
 
-func copyConn(source, target io.ReadWriteCloser) func() error {
+func copyConn(target, source io.ReadWriteCloser) func() error {
 	return func() error {
-		_, err := io.Copy(source, target)
+		_, err := io.Copy(target, source)
 		return err
 	}
 }
@@ -218,33 +242,46 @@ func copyConn(source, target io.ReadWriteCloser) func() error {
 // syncConnections synchronizes data between two connections.
 func syncConnections(ctx context.Context, source, target io.ReadWriteCloser) error {
 	g, _ := errgroup.WithContext(ctx)
-	g.Go(copyConn(source, target))
 	g.Go(copyConn(target, source))
+	g.Go(copyConn(source, target))
 	return g.Wait()
 }
 
-func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string) (*IAPTunnelClient, error) {
-	if host.Interface == "" {
-		host.Interface = "nic0"
+// NewIAPTunnelClient creates a new IAPTunnelClient with the specified host, credentials, and local port.
+// It initializes the client with default values if not provided, and validates the credentials.
+// Example usage:
+//
+//	host := IAPHost{ProjectID: "my-project", Zone: "us-central1-a", Instance: "my-instance"}
+//	creds, _ := google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+//	client, _ := NewIAPTunnelClient(host, creds, "2201")
+//	client.Serve(context.Background())
+func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string, l logger.Logger) (*IAPTunnelClient, error) {
+	client := &IAPTunnelClient{
+		host:      host,
+		localPort: localPort,
+		logger:    l,
 	}
 
-	if localPort == "" {
-		localPort = "2201" // Default local port if not specified
+	if client.logger == nil {
+		client.logger, _ = logger.NewZapLogger("info") // Default logger if none provided
+	}
+
+	if client.host.Instance == "" {
+		client.host.Interface = "nic0"
+	}
+
+	if client.localPort == "" {
+		client.localPort = "2201" // Default local port if not specified
 	}
 
 	if creds == nil {
 		return nil, errors.New("google credentials cannot be nil")
 	}
 
-	tokenSource := creds.TokenSource
-	if tokenSource == nil {
+	client.tokenSource = creds.TokenSource
+	if client.tokenSource == nil {
 		return nil, errors.New("google credentials token source cannot be nil")
 	}
 
-	return &IAPTunnelClient{
-		tokenSource: tokenSource,
-		host:        host,
-		localPort:   localPort,
-		active:      false,
-	}, nil
+	return client, nil
 }

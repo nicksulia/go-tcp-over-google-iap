@@ -2,7 +2,6 @@ package iap
 
 const (
 	// IAPHostURL is the base URL for the Identity-Aware Proxy (IAP) tunnel service.
-	// Source: iap-desktop
 	IAPHostURL        = "tunnel.cloudproxy.app"
 	WebSocketProtocol = "wss"
 	ConnectPath       = "/v4/connect"
@@ -10,8 +9,8 @@ const (
 	// RelayProtocolName is the protocol name used for the SSH Relay v4.
 	RelayProtocolName = "relay.tunnel.cloudproxy.app"
 	Origin            = "bot:iap-tunneler"
-	UserAgent         = "iap-tunneler-cli/1.0"
-	// Message tags used by SSH Relay v4. Source: iap-desktop/sources/Google.Solutions.Iap/Protocol/SshRelayConstants.cs
+	UserAgent         = "go-tcp-over-google-iap/1.0"
+	// Message tags used by SSH Relay v4.
 	// Big-endian encoding is used for the message tags.
 	RelayConnectSuccessSID   uint16 = 0x0001
 	RelayReconnectSuccessACK uint16 = 0x0002
@@ -27,10 +26,11 @@ const (
 	SIDHeaderLen         = MessageTagLen + SIDLen     // Length of the SID message header in bytes (2 bytes for tag + 4 bytes for length)
 	ACKHeaderLen         = MessageTagLen + ACKLen     // Length of the ACK message header in bytes (2 bytes for tag + 8 bytes for length)
 	MaxMessageSize       = 1024 * 16                  // Maximum default message size in bytes (16 KB). Defined by the protocol specification.
+	HangedMessageLen     = 51                         // Length of the message that is received when the connection is hanged
 
 	CloseStatusNormal          = 1000
 	CloseStatusAbnormalClosure = 1006
-	// Custom statuses
+	// Custom statuses. Not used at the moment.
 	CloseStatusErrorUnknown             = 4000
 	CloseStatusSIDUnknown               = 4001
 	CloseStatusSIDInUse                 = 4002
