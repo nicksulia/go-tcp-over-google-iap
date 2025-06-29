@@ -24,7 +24,7 @@
 //	defer cancel()
 //	creds, _ := credentials.DefaultCredentials(ctx)
 //	host := IAPHost{Project: "my-project", Zone: "us-central1-a", Instance: "my-vm"}
-//	client, _ := NewIAPTunnelClient(host, creds, "2201")
+//	client, _ := NewIAPTunnelClient(host, creds, "2201", nil)
 //	err := client.DryRun(ctx) // Optional: Test the connection
 //	if err == nil {
 //		client.Serve(ctx)
@@ -253,7 +253,7 @@ func syncConnections(ctx context.Context, source, target io.ReadWriteCloser) err
 //
 //	host := IAPHost{ProjectID: "my-project", Zone: "us-central1-a", Instance: "my-instance"}
 //	creds, _ := google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
-//	client, _ := NewIAPTunnelClient(host, creds, "2201")
+//	client, _ := NewIAPTunnelClient(host, creds, "2201", nil)
 //	client.Serve(context.Background())
 func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string, l logger.Logger) (*IAPTunnelClient, error) {
 	client := &IAPTunnelClient{

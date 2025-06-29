@@ -49,6 +49,7 @@ ssh -p 2223 username@localhost
 | `--port`             | Remote TCP port on the GCE instance                       | `22`    | ❌       |
 | `--local-port`       | Local port to bind to                                     | `2223`  | ❌       |
 | `--credentials-file` | Path to a service account JSON file (uses ADC if omitted) | —       | ❌       |
+| `--loglevel`         | Logging level. Supports `debug`, `info`, `warn`, `error`  | `info`  | ❌       |
 
 ## Usage as a Library
 
@@ -57,6 +58,7 @@ Go library for creating TCP tunnels over Google Cloud Identity-Aware Proxy (IAP)
 ### Features
 
 - Secure TCP tunneling to internal GCE instances via IAP
+- Provides a `Logger` interface compatible with structured loggers (defaults to [zap](https://github.com/uber-go/zap))
 - Supports custom ports, interfaces, and zones
 - Graceful shutdown via context
 - Dry-run support to validate setup
@@ -77,10 +79,11 @@ go get github.com/nicksulia/go-tcp-over-google-iap
 func main() {
 	ctx := context.Background()
 
+	log, _ := logger.NewZapLogger("info")
 	// Get credentials (can also use ReadCredentialsFile)
 	creds, err := credentials.DefaultCredentials(ctx)
 	if err != nil {
-		log.Fatalf("auth error: %v", err)
+		log.Fatal("auth error", "err", err)
 	}
 
 	// Define the GCE target
@@ -92,23 +95,33 @@ func main() {
 		Port:      "22",
 	}
 
-	client, err := iap.NewIAPTunnelClient(host, creds, "2223")
+	client, err := iap.NewIAPTunnelClient(host, creds, "2223", log)
 	if err != nil {
-		log.Fatalf("client error: %v", err)
+		log.Fatal("client error", "err", err)
 	}
 
 	if err := client.DryRun(); err != nil {
-		log.Fatalf("dry run failed: %v", err)
+		log.Fatal("dry run failed", "err", err)
 	}
 
 	if err := client.Serve(ctx); err != nil {
-		log.Fatalf("serve failed: %v", err)
+		log.Fatal("serve failed", "err", err)
 	}
 }
 ```
 
 ### API Reference
+
 ```go
+// logger/logger.go
+type Logger interface {
+	Debug(msg string, keysAndValues ...any)
+	Info(msg string, keysAndValues ...any)
+	Warn(msg string, keysAndValues ...any)
+	Error(msg string, keysAndValues ...any)
+	Fatal(msg string, keysAndValues ...any)
+}
+
 type IAPHost struct {
 	ProjectID string
 	Zone      string
@@ -117,7 +130,7 @@ type IAPHost struct {
 	Port      string
 }
 
-func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string) (*IAPTunnelClient, error)
+func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string, l logger.Logger) (*IAPTunnelClient, error)
 func (c *IAPTunnelClient) DryRun() error
 func (c *IAPTunnelClient) Serve(ctx context.Context) error
 func (c *IAPTunnelClient) Close()

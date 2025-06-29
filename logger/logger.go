@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -20,10 +21,11 @@ type ZapLogger struct {
 }
 
 func NewZapLogger(level string) (Logger, error) {
+	lcLevel := strings.ToLower(level)
 	cfg := zap.NewProductionConfig()
 	cfg.EncoderConfig.CallerKey = ""
 	cfg.EncoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder
-	switch level {
+	switch lcLevel {
 	case "debug":
 		cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	case "info":

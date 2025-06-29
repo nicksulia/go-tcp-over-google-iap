@@ -14,14 +14,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-type IAPHost struct {
-	ProjectID string `mapstructure:"project"`
-	Zone      string `mapstructure:"zone"`
-	Instance  string `mapstructure:"instance"`
-	Interface string `mapstructure:"interface"`
-	Port      string `mapstructure:"port"`
-}
-
 var (
 	projectID       string
 	zone            string
