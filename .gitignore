@@ -1,3 +1,5 @@
 .vscode
 .env
 go-tcp-over-google-iap
+# Added by goreleaser init:
+dist/
