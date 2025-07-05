@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/nicksulia/go-tcp-over-google-iap/logger"
@@ -24,6 +25,7 @@ type IAPTunnel struct {
 	msgBuffer               []byte
 	closed                  chan struct{}
 	ready                   chan struct{}
+	readyOnce               sync.Once
 }
 
 // NewIAPTunnel creates a new IAPTunnel instance with the specified host and token source.
@@ -167,12 +169,9 @@ func (t *IAPTunnel) handleConnectSuccessSID(frame *IncomingFrame) {
 	t.sid = frame.SID()
 	t.logger.Info("Connect success")
 	t.logger.Debug("Session Details", "SID", t.sid)
-	select {
-	case <-t.ready:
-		// already closed
-	default:
+	t.readyOnce.Do(func() {
 		close(t.ready)
-	}
+	})
 }
 
 // handleReconnectSuccessACK processes incoming reconnect success ACK frames.
