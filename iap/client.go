@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nicksulia/go-tcp-over-google-iap/credentials"
 	"github.com/nicksulia/go-tcp-over-google-iap/logger"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -150,6 +151,49 @@ func (c *IAPTunnelClient) isActive() bool {
 	return c.active
 }
 
+// checkCredentials ensures credentials are either set or default
+func (c *IAPTunnelClient) checkCredentials() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tokenSource != nil {
+		return nil
+	}
+
+	creds, err := credentials.DefaultCredentials(context.Background())
+	if err != nil {
+		return err
+	}
+
+	if creds == nil || creds.TokenSource == nil {
+		return errors.New("Default credentials token source is nil")
+	}
+
+	c.tokenSource = creds.TokenSource
+	return nil
+}
+
+func (c *IAPTunnelClient) SetCredentials(creds *google.Credentials) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if creds == nil || creds.TokenSource == nil {
+		return errors.New("token source is nil")
+	}
+
+	c.tokenSource = creds.TokenSource
+	return nil
+}
+
+func (c *IAPTunnelClient) SetLogger(logger logger.Logger) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.logger == nil {
+		return errors.New("logger is nil")
+	}
+
+	c.logger = logger
+	return nil
+}
+
 // Close is a thread-safe method to close the TCP listener and clean up resources.
 func (c *IAPTunnelClient) Close() error {
 	c.mu.Lock()
@@ -163,6 +207,10 @@ func (c *IAPTunnelClient) Close() error {
 // DryRun tests the connection to the IAP tunnel without establishing a full proxy.
 // It attempts to connect to the IAP tunnel and returns any errors encountered.
 func (c *IAPTunnelClient) DryRun() error {
+	if err := c.checkCredentials(); err != nil {
+		return err
+	}
+
 	tunnel := NewIAPTunnel(c.getHost(), c.getTokenSource(), c.getLogger())
 	return tunnel.DryRun(context.Background())
 }
@@ -173,6 +221,11 @@ func (c *IAPTunnelClient) Serve(ctx context.Context) error {
 	if c.isActive() {
 		return errors.New("tunnel client is already active")
 	}
+
+	if err := c.checkCredentials(); err != nil {
+		return err
+	}
+
 	c.setActive(true)
 	defer c.setActive(false)
 
@@ -253,18 +306,16 @@ func syncConnections(ctx context.Context, source, target io.ReadWriteCloser) err
 //
 //	host := IAPHost{ProjectID: "my-project", Zone: "us-central1-a", Instance: "my-instance"}
 //	creds, _ := google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
-//	client, _ := NewIAPTunnelClient(host, creds, "2201", nil)
+//	client, _ := NewIAPTunnelClient(host, "2201")
+//	client.SetCredentials(creds) // Set the credentials for authentication. If none - default will be used.
 //	client.Serve(context.Background())
-func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string, l logger.Logger) (*IAPTunnelClient, error) {
+func NewIAPTunnelClient(host IAPHost, localPort string) (*IAPTunnelClient, error) {
 	client := &IAPTunnelClient{
 		host:      host,
 		localPort: localPort,
-		logger:    l,
 	}
 
-	if client.logger == nil {
-		client.logger, _ = logger.NewZapLogger("info") // Default logger if none provided
-	}
+	client.logger, _ = logger.NewZapLogger("info") // Default logger
 
 	if client.host.Instance == "" {
 		client.host.Interface = "nic0"
@@ -272,15 +323,6 @@ func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort strin
 
 	if client.localPort == "" {
 		client.localPort = "2201" // Default local port if not specified
-	}
-
-	if creds == nil {
-		return nil, errors.New("google credentials cannot be nil")
-	}
-
-	client.tokenSource = creds.TokenSource
-	if client.tokenSource == nil {
-		return nil, errors.New("google credentials token source cannot be nil")
 	}
 
 	return client, nil

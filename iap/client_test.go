@@ -30,7 +30,9 @@ func TestIAPClientE2E(t *testing.T) {
 		Interface: "nic0",
 	}
 
-	client, err := NewIAPTunnelClient(host, creds, "3089", nil)
+	client, err := NewIAPTunnelClient(host, "3089")
+	assert.Nil(t, err)
+	err = client.SetCredentials(creds)
 	assert.Nil(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

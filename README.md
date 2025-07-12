@@ -79,13 +79,6 @@ go get github.com/nicksulia/go-tcp-over-google-iap
 func main() {
 	ctx := context.Background()
 
-	log, _ := logger.NewZapLogger("info")
-	// Get credentials (can also use ReadCredentialsFile)
-	creds, err := credentials.DefaultCredentials(ctx)
-	if err != nil {
-		log.Fatal("auth error", "err", err)
-	}
-
 	// Define the GCE target
 	host := iap.IAPHost{
 		ProjectID: "my-project",
@@ -95,7 +88,7 @@ func main() {
 		Port:      "22",
 	}
 
-	client, err := iap.NewIAPTunnelClient(host, creds, "2223", log)
+	client, err := iap.NewIAPTunnelClient(host, "2223")
 	if err != nil {
 		log.Fatal("client error", "err", err)
 	}
@@ -130,8 +123,10 @@ type IAPHost struct {
 	Port      string
 }
 
-func NewIAPTunnelClient(host IAPHost, creds *google.Credentials, localPort string, l logger.Logger) (*IAPTunnelClient, error)
+func NewIAPTunnelClient(host IAPHost, localPort string) (*IAPTunnelClient, error)
 func (c *IAPTunnelClient) DryRun() error
 func (c *IAPTunnelClient) Serve(ctx context.Context) error
+func (c *IAPTunnelClient) SetCredentials(creds *google.Credentials) error
+func (c *IAPTunnelClient) SetLogger(l logger.Logger) error
 func (c *IAPTunnelClient) Close()
 ```

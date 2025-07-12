@@ -56,9 +56,17 @@ var rootCmd = &cobra.Command{
 			Port:      port,
 		}
 
-		client, err := iap.NewIAPTunnelClient(host, creds, localPort, logger)
+		client, err := iap.NewIAPTunnelClient(host, localPort)
 		if err != nil {
 			logger.Fatal("Error creating IAP client", "err", err)
+		}
+
+		if err = client.SetLogger(logger); err != nil {
+			logger.Fatal(err.Error())
+		}
+
+		if err = client.SetCredentials(creds); err != nil {
+			logger.Fatal(err.Error())
 		}
 
 		err = client.DryRun()
@@ -98,7 +106,7 @@ func main() {
 
 	err := rootCmd.Execute()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error executing command:", err)
+		fmt.Fprint(os.Stderr, "Error executing command:", err)
 		os.Exit(1)
 	}
 }
