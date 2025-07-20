@@ -13,6 +13,7 @@ import (
 )
 
 type IAPTunnel struct {
+	wsMu                    sync.Mutex
 	ws                      *websocket.Conn
 	host                    IAPHost
 	tokenSource             oauth2.TokenSource
@@ -20,12 +21,13 @@ type IAPTunnel struct {
 	sid                     string
 	logger                  logger.Logger
 	incoming                chan []byte
+	receivedMu              sync.Mutex
 	totalBytesReceived      uint64
 	totalBytesReceivedAcked uint64
 	msgBuffer               []byte
 	closed                  chan struct{}
 	ready                   chan struct{}
-	readyOnce               sync.Once
+	readyMu                 sync.RWMutex
 }
 
 // NewIAPTunnel creates a new IAPTunnel instance with the specified host and token source.
@@ -39,6 +41,18 @@ func NewIAPTunnel(host IAPHost, source oauth2.TokenSource, logger logger.Logger)
 		ready:       make(chan struct{}),
 		logger:      logger,
 	}
+}
+
+func (t *IAPTunnel) getWS() *websocket.Conn {
+	t.wsMu.Lock()
+	defer t.wsMu.Unlock()
+	return t.ws
+}
+
+func (t *IAPTunnel) setWS(ws *websocket.Conn) {
+	t.wsMu.Lock()
+	defer t.wsMu.Unlock()
+	t.ws = ws
 }
 
 func (t *IAPTunnel) headers() (http.Header, error) {
@@ -56,13 +70,19 @@ func (t *IAPTunnel) headers() (http.Header, error) {
 
 func (t *IAPTunnel) connectOrReconnect(ctx context.Context) (*websocket.Conn, *http.Response, error) {
 	var err error
-	var res *http.Response
+	t.receivedMu.Lock()
+	defer t.receivedMu.Unlock()
+
 	// Reset state for a new connection
 	t.totalBytesReceived = 0
 	t.totalBytesReceivedAcked = 0
 	t.totalBytesConfirmed = 0
 	u := t.host.ConnectURI()
-	t.logger.Info("Connecting to IAP Tunnel", "URI", u)
+	t.logger.Info("Connecting/Reconnecting to IAP Tunnel", "URI", u)
+
+	if t.sid != "" {
+		t.ResetReadyAwaiter()
+	}
 
 	headers, err := t.headers()
 	if err != nil {
@@ -73,9 +93,16 @@ func (t *IAPTunnel) connectOrReconnect(ctx context.Context) (*websocket.Conn, *h
 		Subprotocols: []string{RelayProtocolName},
 	}
 
-	t.ws, res, err = websocket.Dial(ctx, u, opts)
+	nextWS, res, err := websocket.Dial(ctx, u, opts)
 
-	return t.ws, res, err
+	if t.getWS() != nil {
+		prevWS := t.getWS()
+		defer prevWS.Close(websocket.StatusGoingAway, "reconnecting")
+	}
+
+	t.setWS(nextWS)
+
+	return nextWS, res, err
 }
 
 // DryRun tests the connection to the IAP tunnel without establishing a full proxy.
@@ -86,7 +113,7 @@ func (t *IAPTunnel) DryRun(ctx context.Context) error {
 		return err
 	}
 
-	_, _, err = t.ws.Read(ctx) // Read to ensure connection is established
+	_, _, err = t.getWS().Read(ctx) // Read to ensure connection is established
 	if err != nil {
 		return err
 	}
@@ -111,7 +138,7 @@ func (t *IAPTunnel) start(ctx context.Context) {
 	}
 
 	for {
-		_, msg, err := t.ws.Read(ctx)
+		_, msg, err := t.getWS().Read(ctx)
 
 		select {
 		case <-ctx.Done():
@@ -169,9 +196,7 @@ func (t *IAPTunnel) handleConnectSuccessSID(frame *IncomingFrame) {
 	t.sid = frame.SID()
 	t.logger.Info("Connect success")
 	t.logger.Debug("Session Details", "SID", t.sid)
-	t.readyOnce.Do(func() {
-		close(t.ready)
-	})
+	t.EnsureReady()
 }
 
 // handleReconnectSuccessACK processes incoming reconnect success ACK frames.
@@ -193,10 +218,12 @@ func (t *IAPTunnel) handleData(frame *IncomingFrame) {
 	t.logger.Debug("Data received", "Data Length", len(data), "binary_data[:20]", frame.data[:20])
 	if data != nil {
 		t.incoming <- data
+		t.receivedMu.Lock()
+		defer t.receivedMu.Unlock()
 		t.totalBytesReceived += uint64(len(data))
 		// gcloud iap-tunnel client sends ACKs for every MaxMessageSize * 2  bytes received
 		if t.totalBytesReceived-t.totalBytesReceivedAcked > MaxMessageSize*2 {
-			_, err := NewACKFrame(t.totalBytesReceived, t.logger).Send(t.ws)
+			_, err := NewACKFrame(t.totalBytesReceived, t.logger).Send(t.getWS())
 			if err != nil {
 				t.logger.Debug("Failed to send ACK frame", "err", err)
 				return
@@ -214,7 +241,26 @@ func (t *IAPTunnel) handleData(frame *IncomingFrame) {
 
 // Ready returns a channel that is closed when the tunnel is ready to accept data.
 func (t *IAPTunnel) Ready() <-chan struct{} {
+	t.readyMu.RLock()
+	defer t.readyMu.RUnlock()
 	return t.ready
+}
+
+func (t *IAPTunnel) ResetReadyAwaiter() {
+	t.readyMu.Lock()
+	defer t.readyMu.Unlock()
+	t.ready = make(chan struct{})
+}
+
+func (t *IAPTunnel) EnsureReady() {
+	t.readyMu.Lock()
+	defer t.readyMu.Unlock()
+
+	select {
+	case <-t.ready:
+	default:
+		close(t.ready)
+	}
 }
 
 // Read implements the io.Reader interface for IAPTunnel.
@@ -222,59 +268,71 @@ func (t *IAPTunnel) Read(p []byte) (int, error) {
 	select {
 	case <-t.closed:
 		return 0, io.EOF
-	case <-t.ready:
-	}
+	case <-t.Ready():
+		// Serve any pending data first
+		if len(t.msgBuffer) > 0 {
+			n := copy(p, t.msgBuffer)
+			t.msgBuffer = t.msgBuffer[n:]
+			return n, nil
+		}
 
-	// Serve any pending data first
-	if len(t.msgBuffer) > 0 {
-		n := copy(p, t.msgBuffer)
-		t.msgBuffer = t.msgBuffer[n:]
+		data, ok := <-t.incoming
+		if !ok {
+			return 0, io.EOF
+		}
+
+		n := copy(p, data)
+		// buffer is empty, so we can copy the data directly
+		t.msgBuffer = data[n:]
 		return n, nil
 	}
-
-	data, ok := <-t.incoming
-	if !ok {
-		return 0, io.EOF
-	}
-
-	n := copy(p, data)
-	// buffer is empty, so we can copy the data directly
-	t.msgBuffer = data[n:]
-	return n, nil
 }
 
 // Write implements the io.Writer interface for IAPTunnel.
 func (t *IAPTunnel) Write(p []byte) (n int, err error) {
-	payloadLen := len(p)
-	totalSent := 0
+	select {
+	case <-t.closed:
+		return 0, io.EOF
+	case <-t.Ready():
+		payloadLen := len(p)
+		totalSent := 0
 
-	for totalSent < len(p) {
-		chunkEnd := totalSent + MaxMessageSize
-		if chunkEnd > payloadLen {
-			chunkEnd = payloadLen
+		for totalSent < len(p) {
+			chunkEnd := totalSent + MaxMessageSize
+			if chunkEnd > payloadLen {
+				chunkEnd = payloadLen
+			}
+
+			// Avoid slicing multiple times
+			chunk := p[totalSent:chunkEnd]
+			frame := NewDataFrame(chunk, t.logger)
+
+			var sent int
+			var sendErr error
+			if sent, sendErr = frame.Send(t.ws); sendErr != nil {
+				return totalSent, sendErr
+			}
+
+			totalSent += sent
 		}
 
-		// Avoid slicing multiple times
-		chunk := p[totalSent:chunkEnd]
-		frame := NewDataFrame(chunk, t.logger)
-
-		var sent int
-		var sendErr error
-		if sent, sendErr = frame.Send(t.ws); sendErr != nil {
-			return totalSent, sendErr
-		}
-
-		totalSent += sent
+		return totalSent, nil
 	}
-
-	return totalSent, nil
 }
 
 // Close implements the io.Closer interface for IAPTunnel.
 func (t *IAPTunnel) Close() error {
-	close(t.closed)
-	if t.ws != nil {
-		return t.ws.Close(websocket.StatusNormalClosure, "closing IAP tunnel")
+	select {
+	case <-t.closed:
+		return nil // already closed
+	default:
+		close(t.closed)
+	}
+
+	ws := t.getWS()
+	if ws != nil {
+		t.setWS(nil)
+		return ws.Close(websocket.StatusNormalClosure, "closing IAP tunnel")
 	}
 	return nil
 }

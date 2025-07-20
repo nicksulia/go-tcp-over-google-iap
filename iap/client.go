@@ -186,7 +186,7 @@ func (c *IAPTunnelClient) SetCredentials(creds *google.Credentials) error {
 func (c *IAPTunnelClient) SetLogger(logger logger.Logger) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.logger == nil {
+	if logger == nil {
 		return errors.New("logger is nil")
 	}
 
